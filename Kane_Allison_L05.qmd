@@ -1,0 +1,631 @@
+---
+title: "L05 Resampling"
+subtitle: "Data Science 2 with R (STAT 301-2)"
+author: "Allison Kane"
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    embed-resources: true
+    code-fold: show
+    link-external-newwindow: true
+    
+execute:
+  warning: false
+  
+from: markdown+emoji    
+---
+
+::: {.callout-tip icon="false"}
+## Github Repo Link
+
+[Allison Github Link](https://github.com/stat301-2-2024-winter/L05-resampling-akane2460)
+
+:::
+
+## Overview
+
+The goal for this lab is to start using resampling methods to compare models. Ultimately leading to the selection of a final/winning/best model.
+
+This lab covers material up to and including [11. Comparing models with resampling (11.2)](https://www.tmwr.org/compare.html) from [Tidy Modeling with R](https://www.tmwr.org/).
+
+## Data
+
+This lab uses the `kc_house_data.csv` dataset found in the `\data` directory. The dataset contains 21,613 house sale prices (`price`) and other information for homes sold between May 2014 and May 2015 in King County, WA. While we should have some familiarity with the dataset, it would be a good idea to take a moment to review/re-read the variable definitions in `kc_house_data_codebook.txt`.
+
+## Exercise
+
+::: {.callout-note icon="false"}
+## Prediction goal
+
+Predict home sale prices.
+:::
+
+### Tasks
+
+#### Task 1
+
+We have previous experience working with this data and we can use that to get us started.
+
+Start by reading in the  data (`kc_house_data.csv`):
+
+1. We previously determined that we should log-transform (base 10) `price`. This has not changed, so apply the log-transformation to `price` when reading in the data.
+
+2. Leave all other variables be when reading in the data. Meaning, do not re-type anything to factor. `waterfront` is already dummy coded and the others that should be ordered factors can be treated as numerical measures (reported on a numerical scale already). We could do more feature engineering, but for now we will opt to keep it relatively simple. 
+
+Typically we would also perform a quick data assurance check using `skimr::skim_without_charts()` and/or the `naniar` package  to see if there are any major issues. We're mostly checking for missing data problems, but we also look for any obvious read-in issues. We've done this in past labs and we haven't noted any issues so we should be able to proceed.
+
+Split the data into training and testing sets using stratified sampling.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+This task has been completed and .8 was used for the split.
+
+:::
+
+#### Task 2
+
+Fold the training data using repeated V-fold cross-validation (5 folds & 3 repeats). Use stratified sampling when folding the data. 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 2
+#| eval: false
+
+# set seed
+set.seed(22222)
+
+# splitting data
+kc_split <- kc_transformed |> 
+  initial_split(prop = .8, strata = price_log10)
+
+# making train and test data
+kc_train <- kc_split |> training()
+kc_test <- kc_split |> testing()
+
+# folding data (resamples)
+set.seed(1245780)
+kc_fold <- kc_train |> 
+  vfold_cv(v = 5, repeats = 3, strata = price_log10)
+
+# write out split, train, fold and test data
+save(kc_split, file = here("data/kc_split.rda"))
+save(kc_train, file = here("data/kc_train.rda"))
+save(kc_test, file = here("data/kc_test.rda"))
+
+```
+
+
+:::
+
+#### Task 3
+
+In your own words, **explain what we are doing** in Task 2. What is repeated V-fold cross-validation? Why are we using it? Given our setup, how many times will each model be fitted/trained?
+
+::: {.callout-tip icon="false"}
+## Solution
+
+In task 2, we are doing a V-fold cross-validation which involves dividing a dataset into a certain number of folds (V), fitting/training the data repeatedly and randomly sampling within the stratification variable. This allows us to have a more reliable assessment of the dataset. Given our setup, this model will be fitted/trained 15 times (5 folds, 3 repeats).
+
+:::
+
+#### Task 4
+
+Looking ahead, we plan on fitting 5 model types: **standard linear**, **ridge**, **lasso**, **random forest**, and **nearest neighbor**. Pre-processing can be the same for the first 3 models and the nearest neighbor model, but the random forest model should have a slightly different pre-processing. This means we will need to create 2 recipes/pre-processors.   
+
+Remember, there should be no factor variables. We left them all as numerical when we read in the data --- this is important.  
+
+::: {.callout-note collapse="true" icon="false"}
+## Recipe for standard linear, ridge, lasso, and nearest neighbor
+
+The steps described below are not necessarily in the correct order.
+
+- Predict the target variable with all other variables
+- Do not use `id`, `date`, or `zipcode` as predictors (might have to exclude `price` too, depends on how log-transformation was handled)
+- Log-transform `sqft_living, sqft_lot, sqft_above,  sqft_living15, sqft_lot15`
+- Turn `sqft_basement` into an indicator variable (if greater than 0 house has basement, otherwise it does not have basement),
+- Transform `lat` using a natural spline with 5 degrees of freedom
+- Center all predictors
+- Scale all predictors
+- Filter out variables have have zero variance
+:::
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 4 part 1
+#| eval: false
+
+# lm
+kc_recipe_lm <- recipe(price_log10 ~ ., data = kc_train) |> 
+  update_role(price, new_role = "orig_scale") |> 
+  step_rm(id, date, zipcode) |> 
+  step_log(
+    sqft_living, 
+    sqft_lot,
+    sqft_above,
+    sqft_living15,
+    sqft_lot15,
+    base = 10
+  ) |> 
+  step_mutate(sqft_basement = if_else(sqft_basement == 0, 1, 0)) |> 
+  step_ns(lat, deg_free = 5) |> 
+  step_zv(all_predictors()) |> 
+  step_normalize(all_numeric_predictors())
+
+```
+
+
+:::
+
+::: {.callout-note collapse="true" icon="false"}
+## Recipe for random forest
+
+Trees automatically detect non-linear relationships so we don't need the natural spline step (it has been removed). Some of the other steps are not needed (such as Log-transforms, centering, scaling), but can be done since they will not meaningfully change anything. The natural spline step performs a basis expansion, which turns one column into 5 --- which is what causes the issue for the random forest algorithm.
+
+The steps described below are not necessarily in the correct order.
+
+- Predict the target variable with all other variables
+- Do not use `id`, `date`, or `zipcode` as predictors (might have to exclude `price` too, depends on how log-transformation was handled)
+- Log-transform `sqft_living, sqft_lot, sqft_above, sqft_living15, sqft_lot15`
+- Turn `sqft_basement` into an indicator variable (if greater than 0 house has basement, otherwise it does not have basement),
+- Center all predictors
+- Scale all predictors
+- Filter out variables have have zero variance
+:::
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: ex 04 part 2
+#| eval: false
+
+# tree-based
+kc_recipe_tree <- recipe(price_log10 ~ ., data = kc_train) |> 
+  update_role(price, new_role = "orig_scale") |> 
+  step_rm(id, date, zipcode) |> 
+  step_log(
+    sqft_living, 
+    sqft_lot,
+    sqft_above,
+    sqft_living15,
+    sqft_lot15,
+    base = 10
+  ) |> 
+  step_mutate(sqft_basement = if_else(sqft_basement == 0, 1, 0)) |> 
+  step_zv(all_predictors()) |> 
+  step_normalize(all_numeric_predictors())
+
+```
+
+
+:::
+
+#### Task 5
+
+Set up workflows for 5 models:
+
+1. A linear regression (`linear_reg()`) with the `"lm"` engine,
+2. A ridge regression (`linear_reg(penalty = 0.01, mixture = 0)`), with the `"glmnet"` engine,
+3. A lasso regression (`linear_reg(penalty = 0.01, mixture = 1)`), with the `"glmnet"` engine, and
+4. A random forest (`rand_forest()`) with the `"ranger"` engine setting `min_n = 10` and `trees = 600`. We will use the default value for `mtry`.
+5. A nearest neighbor (`nearest_neighbor()`) with the `kknn` engine setting and `neighbors` set to 20.
+
+We don't need to see the code for all the workflows. Only display the code for the nearest neighbor workflow.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 5
+#| eval: false
+
+nn_spec <- 
+  nearest_neighbor(neighbors = 20) |> 
+  set_engine("kknn") |> 
+  set_mode("regression")
+
+# define workflows ----
+nn_wflow <-
+  workflow() |> 
+  add_model(nn_spec) |> 
+  add_recipe(kc_recipe_lm)
+
+```
+
+
+:::
+
+#### Task 6
+
+Fit each of the 5 workflows/models created in Task 5 to the folded data. Like Task 5, we do not need to see all workflow fitting/training code. Only display the code for the nearest neighbor fitting. 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 6
+#| eval: false
+
+# fit workflows/models ----
+fit_nn <- fit_resamples(nn_wflow, kc_fold)
+
+# write out results (fitted/trained workflows) ----
+save(fit_nn, file = here("data/fit_nn.rda"))
+
+```
+
+
+:::
+
+#### Task 7
+
+Use `collect_metrics()` to get the mean and standard errors of the performance metrics, RMSE and $R^2$, across all folds for each of the 5 models. This information should be displayed in an appropriately formatted table (not just a printed tibble).
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: ex 07
+#| eval: false
+
+# lm
+load(here("data/fit_lm.rda"))
+
+lm_metrics <- collect_metrics(fit_lm) |> 
+  mutate(
+    method = "lm"
+  )
+
+# lasso
+load(here("data/fit_lasso.rda"))
+
+lasso_metrics <- collect_metrics(fit_lasso) |> 
+  mutate(
+    method = "lasso"
+  )
+
+# ridge
+load(here("data/fit_ridge.rda"))
+
+ridge_metrics <- collect_metrics(fit_ridge) |> 
+  mutate(
+    method = "ridge"
+  )
+
+# rf
+load(here("data/fit_rf.rda"))
+
+rf_metrics <- collect_metrics(fit_rf) |> 
+  mutate(
+    method = "rf"
+  )
+
+# nn
+load(here("data/fit_nn.rda"))
+
+nn_metrics <- collect_metrics(fit_nn) |> 
+  mutate(
+    method = "nn"
+  )
+
+combined_metrics <- bind_rows(lm_metrics, lasso_metrics, ridge_metrics, 
+                              rf_metrics, nn_metrics)
+```
+
+
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> .metric </th>
+   <th style="text-align:left;"> .estimator </th>
+   <th style="text-align:right;"> mean </th>
+   <th style="text-align:right;"> n </th>
+   <th style="text-align:right;"> std_err </th>
+   <th style="text-align:left;"> .config </th>
+   <th style="text-align:left;"> method </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.0904829 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0002482 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> lm </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rsq </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.8428092 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0009742 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> lm </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.0972972 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0003407 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> lasso </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rsq </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.8241698 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0011710 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> lasso </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.0916831 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0002726 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> ridge </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rsq </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.8391263 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0009380 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> ridge </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.0792773 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0003164 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> rf </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rsq </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.8813748 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0007123 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> rf </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.0842038 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0003537 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> nn </td>
+  </tr>
+  <tr>
+   <td style="text-align:left;"> rsq </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.8653131 </td>
+   <td style="text-align:right;"> 15 </td>
+   <td style="text-align:right;"> 0.0008514 </td>
+   <td style="text-align:left;"> Preprocessor1_Model1 </td>
+   <td style="text-align:left;"> nn </td>
+  </tr>
+</tbody>
+</table>
+
+:::
+
+Decide which of the 5 fitted models has performed the best using RMSE. Explain how you made your decision. *Hint: You should consider both the mean RMSE and its standard error.*
+
+::: {.callout-tip icon="false"}
+## Solution
+
+Given that the RMSE of the random forest model is much smaller than all the other models (0.0793), this could indicate that this model is the best performing. When examining within one standard error of the mean, we see that random forest model still out-performs all the other models, its range of values (.078984, .079616) not overlapping with any of the others. Therefore, even with this uncertainty, this model consistently ranks as the best performing model, with the best (lowest) estimate of the RMSE value. 
+
+:::
+
+#### Task 8
+
+Now that you've chosen a *best*/winning model (Task 7), fit/train it on the entire training dataset (not to the folds).
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 8
+#| eval: false
+
+# model specifciations
+
+# set seed
+set.seed(072384)
+
+rf_spec <- 
+  rand_forest(trees = 600, min_n = 10) %>%
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+# define workflows
+rf_wflow <-
+  workflow() |> 
+  add_model(rf_spec) |> 
+  add_recipe(kc_recipe_tree)
+
+# fit workflows/models
+fit_rf_train <- fit(rf_wflow, kc_train)
+
+# write out results (fitted/trained workflows)
+save(fit_rf_train, file = here("data/fit_rf_train.rda"))
+
+```
+
+
+:::
+
+#### Task 9
+
+After fitting/training the best model (Task 8), assess the model's performance using `predict()`, `bind_cols()`, and `rmse()` to assess your model's performance on the **testing** data! 
+
+Compare your model's RMSE on the testing set to its average RMSE across folds.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> .metric </th>
+   <th style="text-align:left;"> .estimator </th>
+   <th style="text-align:right;"> .estimate </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.0774222 </td>
+  </tr>
+</tbody>
+</table>
+
+Given that the RSME obtained from the model's performance on the testing data is .07742, while on the average RMSE across the folds was 0.0793. This indicated that this model performs (on the testing set) better than its average RMSE obtained across folds during cross validation.
+
+:::
+
+#### Task 10
+
+When assessing a best/winning/final model we are not constrained to the evaluation metric used to select it (meaning used to compare it to others). The selection/competition process is over and we are interested in exploring the final model with whatever tools we have.
+
+- Calculate the RMSE for the final model on the original scale of price (not $log_{10}$ price as in Task 9). This is useful because the interpretation of the RMSE is now on the original scale of `price`. Provide an interpretation of this RMSE.
+
+- Calculate $R^2$ for the final model on the original scale. Provide an interpretation.
+
+- Calculate the proportion/percentage of the predicted prices that are within 10% of the original price on the testing set? Is this value surprising or not surprising to you? Explain.
+
+- Build a plot with predicted values verses the true values (on $log_{10}$ scale) --- see Figure 9.2 in Tidy Modeling with R. Could also make this plot on original scale for comparison, but this is not required.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: rmse original scale
+#| eval: false
+
+og_scale_rf_final <- predicted_rf_final |> 
+  mutate(
+    price = 10^price_log10, 
+    .pred = 10^.pred
+  ) |> 
+  select(-price_log10)
+
+rsme_og_scale_rf <- rmse(og_scale_rf_final, truth = price, estimate = .pred)
+
+```
+
+
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> .metric </th>
+   <th style="text-align:left;"> .estimator </th>
+   <th style="text-align:right;"> .estimate </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rmse </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 147509 </td>
+  </tr>
+</tbody>
+</table>
+
+Given the RMSE value of 147509, this indicates that, on average, the model's predicted home price is off by approximately $147,509. 
+
+
+```{r}
+#| label: r squared og scale
+#| eval: false
+
+# r squared original scale
+rsq_metric <- metric_set(rsq)
+
+rsq_og_scale_rf <- rsq_metric(og_scale_rf_final, truth = price, estimate = .pred)
+
+# writing html table 
+rsq_og_scale_rf_final <- kable(rsq_og_scale_rf, format = "html")
+
+```
+
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:left;"> .metric </th>
+   <th style="text-align:left;"> .estimator </th>
+   <th style="text-align:right;"> .estimate </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:left;"> rsq </td>
+   <td style="text-align:left;"> standard </td>
+   <td style="text-align:right;"> 0.8737357 </td>
+  </tr>
+</tbody>
+</table>
+
+Given that the $R^2$ value is approximately 0.874, this indicates that 87.4% of the variation in the home `price` is explained by the model. This larger value of $R^2$ (ranging from 0 to 1, 1 being the strongest, 0 being the weakest) indicates greater explanatory power of a model. The explanatory power of our final model is strong based on the $R^2$ value.
+
+```{r}
+#| label: within ten pct
+#| eval: false
+
+within_10_table <- og_scale_rf_final |> 
+  mutate(
+    pct_diff = price / .pred
+  ) |> 
+  summarize(
+    num_within = sum(pct_diff < 1.10 & pct_diff > .90),
+    count = n(),
+    pct_within = num_within / count * 100
+  )
+
+```
+
+
+<table>
+ <thead>
+  <tr>
+   <th style="text-align:right;"> num_within </th>
+   <th style="text-align:right;"> count </th>
+   <th style="text-align:right;"> pct_within </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:right;"> 2347 </td>
+   <td style="text-align:right;"> 4324 </td>
+   <td style="text-align:right;"> 54.27845 </td>
+  </tr>
+</tbody>
+</table>
+
+We see that approximately 54.28% of the predicted values for home price are within 10% of the true value for home `price`. This is somewhat unsurprising, as high $RS^2$ values indicated that the prediction power was somewhat strong and low values of the RMSE should show that the predicted prices are predicted with some accuracy. Over half of these predicitions are within 10% of the true values, indicating that the model must be somewhat accurate. 
+
+
+![Predicted prices vs. actual prices](plots/predicted_vs_price_plot.png)
+
+:::
